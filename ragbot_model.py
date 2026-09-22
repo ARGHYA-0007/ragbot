@@ -15,6 +15,9 @@ from langchain_groq import ChatGroq
 from langchain_ollama import OllamaEmbeddings
 from typing import Union,Literal
 from pydantic import Field
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
 import re
 retrieve_again = '''You are a strict retrieval quality evaluator.
 
@@ -28,14 +31,13 @@ Return "yes" when:
 - The retrieved documents contain information from the wrong semester.
 - The retrieved documents contain information from the wrong branch.
 - Important subjects or requested fields are missing.
-- The retrieved documents contain mixed or conflicting information.
 - A more targeted search could improve accuracy.
 
 Return "no" ONLY when:
 - The retrieved information directly matches the requested semester/branch/topic.
 - The important requested information is present.
-- There is no obvious irrelevant or conflicting semester information.
 - The retrieved documents are sufficient to answer accurately.
+- can be answer the query using the retrieved text
 
 For queries asking for ALL subjects, verify that the retrieved
 information appears complete rather than assuming that a few subjects
@@ -62,25 +64,59 @@ class SentenceDecision(BaseModel):
 
 class KeepOrDropBatch(BaseModel):
     decisions: List[SentenceDecision]
+# load_dotenv()
+# llm = ChatGoogleGenerativeAI(
+#     model="gemini-3.6-flash"
+# )
 llm = ChatOllama(model='qwen2.5:7b',temperature=0)
 # llm_keepordrop = llm.with_structured_output(KeepOrDrop)
 llm_keepordrop_batch = llm.with_structured_output(KeepOrDropBatch)
 
-class enough_or_not(BaseModel):
+class again_retrieve(BaseModel):
     enoughornot: Literal['yes','no'] = Field(description=f'{retrieve_again}')
-llm_retrieve_again = llm.with_structured_output(enough_or_not)
+llm_retrieve_again = llm.with_structured_output(again_retrieve)
 
+retriever = None
+vector_store = None
+def is_indexed():
+    return retriever is not None
+def build_index(path: str):
+    global retriever, vector_store
 
+    docs = PyPDFLoader(path).load()
+    chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75).split_documents(docs)
+    for d in chunks:
+        d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
 
-path = r"C:\Users\arghy\OneDrive\Desktop\3rd sem\1690629458.pdf"
-docs = (PyPDFLoader(f'{path}').load())
-# print(docs)
-chunks = RecursiveCharacterTextSplitter(chunk_size = 500,chunk_overlap = 75).split_documents(docs)
-for d in chunks:
-    d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
-embeddings = OllamaEmbeddings(model='nomic-embed-text')
-vector_store = FAISS.from_documents(chunks, embeddings)
-retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':10})
+    embeddings = OllamaEmbeddings(model='nomic-embed-text')
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':10})
+
+    return len(chunks)
+# retriever = None
+# vector_store = None
+
+# def build_index(path: str):
+#     global retriever, vector_store
+
+#     docs = PyPDFLoader(path).load()
+#     chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75).split_documents(docs)
+#     for d in chunks:
+#         d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
+
+#     embeddings = OllamaEmbeddings(model='nomic-embed-text')
+#     vector_store = FAISS.from_documents(chunks, embeddings)
+#     dense_retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':10})
+
+#     bm25_retriever = BM25Retriever.from_documents(chunks)
+#     bm25_retriever.k = 10
+
+#     retriever = EnsembleRetriever(
+#         retrievers=[bm25_retriever, dense_retriever],
+#         weights=[0.5, 0.5]
+#     )
+
+#     return len(chunks)
 class RagState(TypedDict):
     query:Annotated[list, add_messages]
     refined_retrieved_text:str
@@ -112,7 +148,7 @@ def retrieve_to_refine(state:RagState):
     total = previous_text + '\n' + refined_text
     return {'refined_retrieved_text': total, 'retry_count': state.get('retry_count',0) + 1}
 def enough(state:RagState):
-    query =  state['query'][-1].content
+    query =  state['query'][0].content
     text = state['refined_retrieved_text']
     yes_or_no = llm_retrieve_again.invoke(f'query:{query} and retrieved docs are:\n {text}')
     return {'retrieve_again':yes_or_no.enoughornot}
@@ -140,14 +176,20 @@ Requirements:
 - Identify the key concepts, entities, keywords, and context.
 - Add useful related terms that may appear in the PDF.
 - Make the query more specific and retrieval-friendly.
-- Do not change the meaning of the original query.
+- You can make new query related to the first query to answer the question 
 - Do not answer the question.
 - Return only the rewritten query, with no explanation.
 """)
     return {'query':HumanMessage(content=new_query.content)}
 def generate(state:RagState):
-    result = llm.invoke(f'generate answer as per the query:{state["query"][0]} and the retrieve documents:{state["refined_retrieved_text"]}').content
-    return {'answer':result}
+    result = llm.invoke(f'''Answer the query using ONLY the retrieved documents below. 
+If the retrieved documents do not contain information matching the query 
+(wrong semester, wrong subject, or genuinely missing), say clearly that you could not find 
+the requested information rather than guessing or mixing unrelated content.
+
+query: {state["query"][0]}
+retrieved documents: {state["refined_retrieved_text"]}''').content
+    return {'answer': result}
 def decompose_to_sentences(text):
     text = re.sub(r"\s+", " ", text).strip()
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)]
@@ -163,9 +205,9 @@ graph.add_conditional_edges('enough',route)
 graph.add_edge('new_query','retrieve')
 graph.add_edge('generate',END)
 workflow = graph.compile()
-while True:
-    query = input('USER:')
-    if query.lower() in ['exit','bye','stop']:
-        break
-    result = workflow.invoke({'query':[HumanMessage(content=query)],'refined_retrieved_text':'','retry_count':0})
-    print('AI:',result['answer'])
+# while True:
+#     query = input('USER:')
+#     if query.lower() in ['exit','bye','stop']:
+#         break
+#     result = workflow.invoke({'query':[HumanMessage(content=query)],'refined_retrieved_text':'','retry_count':0})
+#     print('AI:',result['answer'])
