@@ -123,30 +123,31 @@ class RagState(TypedDict):
     answer:str
     retrieve_again:str
     retry_count:int
+    messages:Annotated[list[BaseMessage],add_messages]
 
 def retrieve_to_refine(state:RagState):
     query = state['query'][-1].content
-    strip_list = []
+    # strip_list = []
     previous_text = state['refined_retrieved_text']
     result = retriever.invoke(f'{query}')
-#     refined_text = '\n'.join(
-#     doc.page_content for doc in result
-# )
-    for i in range(len(result)):
-        z = decompose_to_sentences(result[i].page_content)
-        for j in range(len(z)):
-            strip_list.append(z[j])
+    refined_text = '\n'.join(
+    doc.page_content for doc in result
+)
+    # for i in range(len(result)):
+    #     z = decompose_to_sentences(result[i].page_content)
+    #     for j in range(len(z)):
+    #         strip_list.append(z[j])
 
-    numbered = '\n'.join(f'{i}: {s}' for i, s in enumerate(strip_list))
-    batch_result = llm_keepordrop_batch.invoke(
-        f'{sentence_filter_prompt}\n\nquery: {query}\n\nsentences:\n{numbered}'
-    )
+    # numbered = '\n'.join(f'{i}: {s}' for i, s in enumerate(strip_list))
+    # batch_result = llm_keepordrop_batch.invoke(
+    #     f'{sentence_filter_prompt}\n\nquery: {query}\n\nsentences:\n{numbered}'
+    # )
 
-    keep_indices = {d.index for d in batch_result.decisions if d.keep}
-    refined_text = '\n'.join(strip_list[i] for i in keep_indices if i < len(strip_list))
+    # keep_indices = {d.index for d in batch_result.decisions if d.keep}
+    # refined_text = '\n'.join(strip_list[i] for i in keep_indices if i < len(strip_list))
 
     total = previous_text + '\n' + refined_text
-    return {'refined_retrieved_text': total, 'retry_count': state.get('retry_count',0) + 1}
+    return {'refined_retrieved_text': total, 'retry_count': state.get('retry_count',0) + 1,}
 def enough(state:RagState):
     query =  state['query'][0].content
     text = state['refined_retrieved_text']
@@ -183,9 +184,6 @@ Requirements:
     return {'query':HumanMessage(content=new_query.content)}
 def generate(state:RagState):
     result = llm.invoke(f'''Answer the query using ONLY the retrieved documents below. 
-If the retrieved documents do not contain information matching the query 
-(wrong semester, wrong subject, or genuinely missing), say clearly that you could not find 
-the requested information rather than guessing or mixing unrelated content.
 
 query: {state["query"][0]}
 retrieved documents: {state["refined_retrieved_text"]}''').content
