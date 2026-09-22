@@ -8,7 +8,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from fastapi import FastAPI, HTTPException
 app = FastAPI()
-
+config = {"configurable": {"thread_id": '1'}}
 
 @app.get('/')
 def hello():
@@ -25,5 +25,5 @@ def indexing(path):
 def call(query):
     if not is_indexed():
         raise HTTPException(status_code=400, detail="No PDF indexed yet — call /index-pdf first")
-    result = workflow.invoke({'query':[HumanMessage(content=query)],'refined_retrieved_text':'','retry_count':0})
-    return {"answer": result['answer']}
+    result = workflow.invoke({'query':[HumanMessage(content=query)],'refined_retrieved_text':'','retry_count':0,'ai_query':''},config=config)
+    return {"answer": result['query'][-1].content}

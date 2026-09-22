@@ -18,6 +18,7 @@ from pydantic import Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
+from langgraph.checkpoint.memory import MemorySaver
 import re
 retrieve_again = '''You are a strict retrieval quality evaluator.
 
@@ -90,43 +91,57 @@ def build_index(path: str):
 
     embeddings = OllamaEmbeddings(model='nomic-embed-text')
     vector_store = FAISS.from_documents(chunks, embeddings)
-    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':10})
+    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':5})
 
     return len(chunks)
-# retriever = None
-# vector_store = None
+class isitchat(BaseModel):
+    isitnormal:Literal['yes','no'] = Field(description='''You are a query classifier for a RAG chatbot.
 
-# def build_index(path: str):
-#     global retriever, vector_store
+Your task is to determine whether the user's query can be answered as normal conversation or whether it requires retrieving information from the provided documents.
 
-#     docs = PyPDFLoader(path).load()
-#     chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75).split_documents(docs)
-#     for d in chunks:
-#         d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
+Return **"yes"** if the query is normal conversation and does NOT require document retrieval.
 
-#     embeddings = OllamaEmbeddings(model='nomic-embed-text')
-#     vector_store = FAISS.from_documents(chunks, embeddings)
-#     dense_retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':10})
+Return **"no"** if the query requires information from the documents and should be sent to the retrieval system.
 
-#     bm25_retriever = BM25Retriever.from_documents(chunks)
-#     bm25_retriever.k = 10
+Examples:
 
-#     retriever = EnsembleRetriever(
-#         retrievers=[bm25_retriever, dense_retriever],
-#         weights=[0.5, 0.5]
-#     )
+* "Hi" → yes
+* "How are you?" → yes
+* "Tell me a joke" → yes
+* "What is the capital of India?" → yes
+* "What subjects are in the 3rd semester IT syllabus?" → no
+* "Explain the topic mentioned in the PDF" → no
+* "What does the document say about attendance?" → no
+* "According to the PDF, what is the eligibility criteria?" → no
 
-#     return len(chunks)
+Return only **"yes"** or **"no"**. Do not provide any explanation.
+''')
+llm_isnormal = llm.with_structured_output(isitchat)
 class RagState(TypedDict):
-    query:Annotated[list, add_messages]
+    query:Annotated[list[BaseMessage], add_messages]
+    ai_query:str
     refined_retrieved_text:str
     answer:str
     retrieve_again:str
     retry_count:int
-    messages:Annotated[list[BaseMessage],add_messages]
-
+    normal_chat:str
+def chat(state:RagState):
+    yah_no = llm_isnormal.invoke(state['query'][-1].content)
+    return {'normal_chat':yah_no.isitnormal}
+def route_chat(state:RagState):
+    if state['normal_chat'].lower() == 'yes':
+        # 
+        return 'chatting'
+    elif state['normal_chat'].lower() == 'no':
+        return 'retrieve'
+def chatting(state:RagState):
+    result = llm.invoke(state['query'])
+    return {'query':[result]}
 def retrieve_to_refine(state:RagState):
-    query = state['query'][-1].content
+    if state['ai_query']:
+        query = state['ai_query']
+    else:
+        query = state['query'][-1].content
     # strip_list = []
     previous_text = state['refined_retrieved_text']
     result = retriever.invoke(f'{query}')
@@ -149,7 +164,7 @@ def retrieve_to_refine(state:RagState):
     total = previous_text + '\n' + refined_text
     return {'refined_retrieved_text': total, 'retry_count': state.get('retry_count',0) + 1,}
 def enough(state:RagState):
-    query =  state['query'][0].content
+    query =  state['query'][-1].content
     text = state['refined_retrieved_text']
     yes_or_no = llm_retrieve_again.invoke(f'query:{query} and retrieved docs are:\n {text}')
     return {'retrieve_again':yes_or_no.enoughornot}
@@ -168,7 +183,7 @@ You are a query rewriting agent for a PDF retrieval system.
 
 The human has provided the following query:
 
-{state["query"]}
+{state["query"][-1].content} and query made by ai are ({state['ai_query']}) and retrieved data are ({state['refined_retrieved_text']})
 
 Rewrite this query into a new, more precise search query that can retrieve additional relevant information from the PDF.
 
@@ -181,28 +196,31 @@ Requirements:
 - Do not answer the question.
 - Return only the rewritten query, with no explanation.
 """)
-    return {'query':HumanMessage(content=new_query.content)}
+    return {'ai_query':new_query.content}
 def generate(state:RagState):
-    result = llm.invoke(f'''Answer the query using ONLY the retrieved documents below. 
-
-query: {state["query"][0]}
+    result = llm.invoke(f'''Answer the query using ONLY the retrieved documents below. query: {state["query"][-1].content}
 retrieved documents: {state["refined_retrieved_text"]}''').content
-    return {'answer': result}
+    return {'query': [result]}
 def decompose_to_sentences(text):
     text = re.sub(r"\s+", " ", text).strip()
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text)]
 graph = StateGraph(RagState)
+graph.add_node('chat',chat)
+graph.add_node('chatting',chatting)
 graph.add_node('retrieve',retrieve_to_refine)
 graph.add_node('enough',enough)
 graph.add_node('generate',generate)
 graph.add_node('new_query',new_query)
 
-graph.add_edge(START,'retrieve')
+graph.add_edge(START,'chat')
+graph.add_conditional_edges('chat',route_chat)
+graph.add_edge('chatting',END)
 graph.add_edge('retrieve','enough')
 graph.add_conditional_edges('enough',route)
 graph.add_edge('new_query','retrieve')
 graph.add_edge('generate',END)
-workflow = graph.compile()
+checkpoint = MemorySaver()
+workflow = graph.compile(checkpointer=checkpoint)
 # while True:
 #     query = input('USER:')
 #     if query.lower() in ['exit','bye','stop']:
