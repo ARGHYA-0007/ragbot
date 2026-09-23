@@ -1,19 +1,15 @@
-from fastapi import FastAPI
-from ragbot_model import workflow,build_index,is_indexed
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from ragbot_model import workflow, build_index, is_indexed
 from langchain_core.messages import HumanMessage
-from langchain_ollama import OllamaEmbeddings
-from langchain_ollama import ChatOllama
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from fastapi import FastAPI, HTTPException
+import os
+import shutil
+
 app = FastAPI()
 config = {"configurable": {"thread_id": '1'}}
 
 @app.get('/')
 def hello():
     return {'message':'hello you are using rag made by arghya'}
-
 @app.post('/indexing')
 def indexing(path):
     try:
@@ -23,7 +19,8 @@ def indexing(path):
         raise HTTPException(status_code=500, detail=str(e))
 @app.post('/query')
 def call(query):
-    if not is_indexed():
-        raise HTTPException(status_code=400, detail="No PDF indexed yet — call /index-pdf first")
-    result = workflow.invoke({'query':[HumanMessage(content=query)],'refined_retrieved_text':'','retry_count':0,'ai_query':''},config=config)
+    result = workflow.invoke(
+        {'query':[HumanMessage(content=query)], 'refined_retrieved_text':'', 'retry_count':0, 'ai_query':''},
+        config=config
+    )
     return {"answer": result['query'][-1].content}

@@ -18,18 +18,13 @@
     --amber: #e2a13d;
     --amber-dim: #6b5227;
     --blue: #6fa8d8;
+    --green: #6fbf7a;
     --error: #d3695f;
     --radius: 10px;
-    font-family: 'Inter', -apple-system, sans-serif, 'Inter';
+    font-family: 'Inter', -apple-system, sans-serif;
     box-sizing: border-box;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
-  }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      --bg: #0e1013; --surface: #15181d; --surface-raised: #1b1f26;
-      --border: #262b33; --text: #e7e6e2; --text-dim: #8b8f98;
-    }
   }
   * { box-sizing: border-box; }
   html, body {
@@ -56,7 +51,7 @@
   }
   .brand-row {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 10px;
     margin-bottom: 12px;
   }
@@ -76,6 +71,22 @@
     font-size: 12px;
     color: var(--text-dim);
   }
+  .doc-pill {
+    margin-left: auto;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .doc-pill .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text-dim); }
+  .doc-pill.active .dot { background: var(--green); }
+  .doc-pill.active { color: var(--green); border-color: rgba(111,191,122,0.3); }
+
   .index-row {
     display: flex;
     gap: 8px;
@@ -107,7 +118,7 @@
     cursor: pointer;
     white-space: nowrap;
   }
-  .index-btn:hover { filter: brightness(1.08); }
+  .index-btn:hover:not(:disabled) { filter: brightness(1.08); }
   .index-btn:disabled { opacity: 0.5; cursor: default; filter: none; }
 
   .index-status {
@@ -120,10 +131,10 @@
     gap: 6px;
     min-height: 16px;
   }
-  .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-  .dot.ok { background: #6fbf7a; }
-  .dot.err { background: var(--error); }
-  .dot.pending { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
+  .dot-status { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .dot-status.ok { background: var(--green); }
+  .dot-status.err { background: var(--error); }
+  .dot-status.pending { background: var(--amber); animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 
   /* ---- chat area ---- */
@@ -139,7 +150,7 @@
     margin: auto;
     text-align: center;
     color: var(--text-dim);
-    max-width: 360px;
+    max-width: 380px;
     font-size: 13px;
     line-height: 1.6;
   }
@@ -259,11 +270,12 @@
   <div class="brand-row">
     <div class="brand-mark"></div>
     <h1>ragbot</h1>
-    <span class="brand-sub">local PDF Q&amp;A</span>
+    <span class="brand-sub">chat freely — add a PDF path anytime for document Q&amp;A</span>
+    <div id="docPill" class="doc-pill"><div class="dot"></div><span id="docPillText">no document</span></div>
   </div>
   <div class="index-row">
     <input id="pathInput" class="path-input" type="text"
-      placeholder="C:\Users\arghy\OneDrive\Desktop\3rd sem\1690629458.pdf" />
+      placeholder="Optional — paste a PDF path, e.g. C:\Users\arghy\OneDrive\Desktop\3rd sem\1690629458.pdf" />
     <button id="indexBtn" class="index-btn">Index PDF</button>
   </div>
   <div id="indexStatus" class="index-status"></div>
@@ -271,15 +283,15 @@
 
 <main id="chatArea">
   <div class="empty-state" id="emptyState">
-    <strong>No document indexed yet</strong>
-    Paste the full path to a PDF above and click Index PDF. Once it's ready, ask anything about the document below.
+    <strong>Ask me anything</strong>
+    Chat works right away. If you want answers grounded in a specific PDF, paste its path above and click Index PDF — no need to do that first.
   </div>
 </main>
 
 <footer>
   <div class="chat-row">
-    <input id="chatInput" class="chat-input" type="text" placeholder="Indexing required before you can ask a question" disabled />
-    <button id="sendBtn" class="send-btn" disabled>Send</button>
+    <input id="chatInput" class="chat-input" type="text" placeholder="Ask something…" />
+    <button id="sendBtn" class="send-btn">Send</button>
   </div>
 </footer>
 
@@ -293,35 +305,33 @@
   const emptyState = document.getElementById('emptyState');
   const chatInput = document.getElementById('chatInput');
   const sendBtn = document.getElementById('sendBtn');
+  const docPill = document.getElementById('docPill');
+  const docPillText = document.getElementById('docPillText');
 
-  let indexed = false;
-
-  function setStatus(kind, text) {
+  function setIndexStatus(kind, text) {
     indexStatus.innerHTML = '';
     const dot = document.createElement('div');
-    dot.className = 'dot ' + kind;
+    dot.className = 'dot-status ' + kind;
     const label = document.createElement('span');
     label.textContent = text;
     indexStatus.appendChild(dot);
     indexStatus.appendChild(label);
   }
 
-  function setChatEnabled(on) {
-    indexed = on;
-    chatInput.disabled = !on;
-    sendBtn.disabled = !on;
-    chatInput.placeholder = on ? 'Ask about the indexed document…' : 'Indexing required before you can ask a question';
+  function markDocActive(filenameOrChunks) {
+    docPill.classList.add('active');
+    docPillText.textContent = filenameOrChunks;
   }
 
   async function runIndex() {
     const path = pathInput.value.trim();
     if (!path) {
-      setStatus('err', 'Enter a PDF path first.');
+      setIndexStatus('err', 'Enter a PDF path first.');
       return;
     }
     indexBtn.disabled = true;
     pathInput.disabled = true;
-    setStatus('pending', 'Indexing document — this can take a moment on a large PDF…');
+    setIndexStatus('pending', 'Indexing document — this can take a moment on a large PDF…');
 
     try {
       const url = API_BASE + '/indexing?path=' + encodeURIComponent(path);
@@ -333,15 +343,10 @@
       }
 
       const chunks = data.chunks_created !== undefined ? data.chunks_created : '?';
-      setStatus('ok', 'Indexed — ' + chunks + ' chunks ready.');
-      setChatEnabled(true);
-      if (emptyState) {
-        emptyState.textContent = '';
-        emptyState.style.display = 'none';
-      }
+      setIndexStatus('ok', 'Indexed — ' + chunks + ' chunks ready.');
+      markDocActive(chunks + ' chunks indexed');
     } catch (err) {
-      setStatus('err', 'Failed: ' + err.message + ' — is the FastAPI server running on :8000?');
-      setChatEnabled(false);
+      setIndexStatus('err', 'Failed: ' + err.message + ' — is the FastAPI server running on :8000?');
     } finally {
       indexBtn.disabled = false;
       pathInput.disabled = false;
@@ -349,6 +354,7 @@
   }
 
   function addMessage(role, text) {
+    if (emptyState && emptyState.parentNode) emptyState.remove();
     const msg = document.createElement('div');
     msg.className = 'msg ' + role;
 
@@ -396,7 +402,7 @@
 
   async function sendQuery() {
     const q = chatInput.value.trim();
-    if (!q || !indexed) return;
+    if (!q) return;
 
     addMessage('user', q);
     chatInput.value = '';
@@ -432,6 +438,8 @@
   pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runIndex(); });
   sendBtn.addEventListener('click', sendQuery);
   chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendQuery(); });
+
+  chatInput.focus();
 </script>
 
 </body>

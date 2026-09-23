@@ -20,6 +20,29 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 from langgraph.checkpoint.memory import MemorySaver
 import re
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    CSVLoader,
+    TextLoader,
+    Docx2txtLoader,
+    UnstructuredExcelLoader,
+)
+import os
+
+def get_loader(path: str):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.pdf':
+        return PyPDFLoader(path)
+    elif ext == '.csv':
+        return CSVLoader(path)
+    elif ext == '.txt':
+        return TextLoader(path, encoding='utf-8')
+    elif ext == '.docx':
+        return Docx2txtLoader(path)
+    elif ext in ('.xlsx', '.xls'):
+        return UnstructuredExcelLoader(path)
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
 retrieve_again = '''You are a strict retrieval quality evaluator.
 
 Your job is to determine whether the retrieved documents are sufficient
