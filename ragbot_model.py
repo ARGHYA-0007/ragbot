@@ -11,11 +11,11 @@ from langgraph.graph.message import add_messages, BaseMessage
 from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage
 from langgraph.graph import StateGraph, START, END
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
 from langchain_ollama import OllamaEmbeddings
 from typing import Union,Literal
 from pydantic import Field
-from langchain_google_genai import ChatGoogleGenerativeAI
+# from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 from langgraph.checkpoint.memory import MemorySaver
@@ -28,19 +28,28 @@ from langchain_community.document_loaders import (
     UnstructuredExcelLoader,
 )
 import os
+import pandas as pd
+from langchain_core.documents import Document
 
+def load_xlsx(path):
+    df = pd.read_excel(path)
+    docs = []
+    for i, row in df.iterrows():
+        content = ', '.join(f"{col}: {row[col]}" for col in df.columns)
+        docs.append(Document(page_content=content, metadata={'row': i, 'source': path}))
+    return docs
 def get_loader(path: str):
     ext = os.path.splitext(path)[1].lower()
     if ext == '.pdf':
-        return PyPDFLoader(path)
+        return ('loader', PyPDFLoader(path))
     elif ext == '.csv':
-        return CSVLoader(path)
+        return ('loader', CSVLoader(path))
     elif ext == '.txt':
-        return TextLoader(path, encoding='utf-8')
+        return ('loader', TextLoader(path, encoding='utf-8'))
     elif ext == '.docx':
-        return Docx2txtLoader(path)
+        return ('loader', Docx2txtLoader(path))
     elif ext in ('.xlsx', '.xls'):
-        return UnstructuredExcelLoader(path)
+        return ('docs', load_xlsx(path))
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 retrieve_again = '''You are a strict retrieval quality evaluator.
@@ -107,7 +116,9 @@ def is_indexed():
 def build_index(path: str):
     global retriever, vector_store
 
-    docs = PyPDFLoader(path).load()
+    # docs = PyPDFLoader(path).load()
+    kind, result = get_loader(path)
+    docs = result.load() if kind == 'loader' else result
     chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=75).split_documents(docs)
     for d in chunks:
         d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")

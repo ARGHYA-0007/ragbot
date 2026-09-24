@@ -91,21 +91,44 @@
     display: flex;
     gap: 8px;
     max-width: 900px;
+    align-items: center;
   }
-  .path-input {
+  .file-picker {
     flex: 1;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    color: var(--text);
     padding: 9px 12px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
-    outline: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
     min-width: 0;
   }
-  .path-input::placeholder { color: var(--text-dim); }
-  .path-input:focus { border-color: var(--amber-dim); }
+  .file-picker:hover { border-color: var(--amber-dim); }
+  .file-picker .icon {
+    flex: none;
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .file-picker .fname {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+  }
+  .file-picker.has-file .fname { color: var(--text); }
+  #fileInput { display: none; }
   .index-btn {
     flex: none;
     background: var(--amber);
@@ -270,13 +293,16 @@
   <div class="brand-row">
     <div class="brand-mark"></div>
     <h1>ragbot</h1>
-    <span class="brand-sub">chat freely — add a PDF path anytime for document Q&amp;A</span>
+    <span class="brand-sub">chat freely — upload a file anytime for document Q&amp;A</span>
     <div id="docPill" class="doc-pill"><div class="dot"></div><span id="docPillText">no document</span></div>
   </div>
   <div class="index-row">
-    <input id="pathInput" class="path-input" type="text"
-      placeholder="Optional — paste a PDF path, e.g. C:\Users\arghy\OneDrive\Desktop\3rd sem\1690629458.pdf" />
-    <button id="indexBtn" class="index-btn">Index PDF</button>
+    <div id="filePicker" class="file-picker">
+      <div class="icon">↑</div>
+      <span class="fname" id="fname">Click to choose a file (PDF, CSV, TXT, DOCX, XLSX) — upload anytime to switch documents</span>
+    </div>
+    <input id="fileInput" type="file" accept=".pdf,.csv,.txt,.docx,.xlsx,.xls" />
+    <button id="indexBtn" class="index-btn" disabled>Index PDF</button>
   </div>
   <div id="indexStatus" class="index-status"></div>
 </header>
@@ -284,7 +310,7 @@
 <main id="chatArea">
   <div class="empty-state" id="emptyState">
     <strong>Ask me anything</strong>
-    Chat works right away. If you want answers grounded in a specific PDF, paste its path above and click Index PDF — no need to do that first.
+    Chat works right away. If you want answers grounded in a document, upload a file above (PDF, CSV, TXT, DOCX, XLSX) and click Index PDF — no need to do that first.
   </div>
 </main>
 
@@ -298,7 +324,9 @@
 <script>
   const API_BASE = 'http://localhost:8000';
 
-  const pathInput = document.getElementById('pathInput');
+  const filePicker = document.getElementById('filePicker');
+  const fileInput = document.getElementById('fileInput');
+  const fname = document.getElementById('fname');
   const indexBtn = document.getElementById('indexBtn');
   const indexStatus = document.getElementById('indexStatus');
   const chatArea = document.getElementById('chatArea');
@@ -307,6 +335,19 @@
   const sendBtn = document.getElementById('sendBtn');
   const docPill = document.getElementById('docPill');
   const docPillText = document.getElementById('docPillText');
+
+  let selectedFile = null;
+
+  filePicker.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    selectedFile = file;
+    fname.textContent = file.name;
+    filePicker.classList.add('has-file');
+    indexBtn.disabled = false;
+    indexStatus.innerHTML = '';
+  });
 
   function setIndexStatus(kind, text) {
     indexStatus.innerHTML = '';
@@ -318,24 +359,25 @@
     indexStatus.appendChild(label);
   }
 
-  function markDocActive(filenameOrChunks) {
+  function markDocActive(text) {
     docPill.classList.add('active');
-    docPillText.textContent = filenameOrChunks;
+    docPillText.textContent = text;
   }
 
   async function runIndex() {
-    const path = pathInput.value.trim();
-    if (!path) {
-      setIndexStatus('err', 'Enter a PDF path first.');
+    if (!selectedFile) {
+      setIndexStatus('err', 'Choose a PDF first.');
       return;
     }
     indexBtn.disabled = true;
-    pathInput.disabled = true;
-    setIndexStatus('pending', 'Indexing document — this can take a moment on a large PDF…');
+    filePicker.style.pointerEvents = 'none';
+    setIndexStatus('pending', 'Uploading and indexing — this can take a moment on a large PDF…');
 
     try {
-      const url = API_BASE + '/indexing?path=' + encodeURIComponent(path);
-      const res = await fetch(url, { method: 'POST' });
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      const res = await fetch(API_BASE + '/indexing', { method: 'POST', body: formData });
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
@@ -343,13 +385,14 @@
       }
 
       const chunks = data.chunks_created !== undefined ? data.chunks_created : '?';
-      setIndexStatus('ok', 'Indexed — ' + chunks + ' chunks ready.');
-      markDocActive(chunks + ' chunks indexed');
+      const name = data.filename || selectedFile.name;
+      setIndexStatus('ok', 'Indexed ' + name + ' — ' + chunks + ' chunks ready.');
+      markDocActive(name);
     } catch (err) {
       setIndexStatus('err', 'Failed: ' + err.message + ' — is the FastAPI server running on :8000?');
     } finally {
       indexBtn.disabled = false;
-      pathInput.disabled = false;
+      filePicker.style.pointerEvents = 'auto';
     }
   }
 
@@ -435,7 +478,6 @@
   }
 
   indexBtn.addEventListener('click', runIndex);
-  pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') runIndex(); });
   sendBtn.addEventListener('click', sendQuery);
   chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendQuery(); });
 
